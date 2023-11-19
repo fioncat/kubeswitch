@@ -72,6 +72,10 @@ func (o *useOptions) run() error {
 }
 
 func (o *useOptions) selectContext(config *clientcmdapi.Config) (string, error) {
+	if len(config.Contexts) == 0 {
+		return "", errors.New("No cluster to use")
+	}
+
 	if o.name != "" {
 		name := o.name
 		if o.name == "-" {
