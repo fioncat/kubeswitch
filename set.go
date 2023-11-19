@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 
+	"github.com/spf13/cobra"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 )
@@ -21,6 +22,32 @@ type setOptions struct {
 	filename string
 }
 
+func Set(out io.Writer, configAccess clientcmd.ConfigAccess) *cobra.Command {
+	opts := &setOptions{configAccess: configAccess, out: out}
+
+	cmd := &cobra.Command{
+		Use:   "set [-f filename] NAME",
+		Short: "Set cluster",
+
+		Args: cobra.ExactArgs(1),
+
+		ValidArgsFunction: completeContextFunc,
+
+		RunE: func(cmd *cobra.Command, args []string) error {
+			opts.name = args[0]
+			if opts.name == "" {
+				return cmd.Usage()
+			}
+			return opts.run()
+		},
+	}
+
+	flags := cmd.Flags()
+	flags.StringVarP(&opts.filename, "file", "f", "", "The merge config filename, if not provided, will open an editor to edit config")
+
+	return cmd
+}
+
 func (o *setOptions) run() error {
 	config, err := o.configAccess.GetStartingConfig()
 	if err != nil {
@@ -31,6 +58,45 @@ func (o *setOptions) run() error {
 	newConfig, err := o.edit(configEdit)
 	if err != nil {
 		return err
+	}
+
+	if len(newConfig.Clusters) == 0 || len(newConfig.AuthInfos) == 0 {
+		fmt.Fprintln(o.out, "None cluster, cancel set")
+		return nil
+	}
+	if len(newConfig.Clusters) != 1 || len(newConfig.AuthInfos) != 1 {
+		return errors.New("Invalid edit config, the number of cluster and user should be one")
+	}
+
+	var cluster *clientcmdapi.Cluster
+	for _, c := range newConfig.Clusters {
+		cluster = c
+		break
+	}
+
+	var authInfo *clientcmdapi.AuthInfo
+	for _, a := range newConfig.AuthInfos {
+		authInfo = a
+		break
+	}
+
+	ns := "default"
+	if ctx, ok := config.Contexts[o.name]; ok {
+		ns = ctx.Namespace
+	}
+
+	config.Clusters[o.name] = cluster
+	config.AuthInfos[o.name] = authInfo
+	config.Contexts[o.name] = &clientcmdapi.Context{
+		Cluster:   o.name,
+		AuthInfo:  o.name,
+		Namespace: ns,
+	}
+
+	fmt.Fprintf(o.out, "Set cluster %q done.\n", o.name)
+	err = clientcmd.ModifyConfig(o.configAccess, *config, true)
+	if err != nil {
+		return fmt.Errorf("Write config: %w", err)
 	}
 
 	return nil
