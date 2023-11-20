@@ -53,6 +53,7 @@ func Cmd(out io.Writer) *cobra.Command {
 	cmd.AddCommand(Use(out, patchOptions))
 	cmd.AddCommand(Ns(out, patchOptions))
 	cmd.AddCommand(Del(out, patchOptions))
+	cmd.AddCommand(List(out, patchOptions))
 
 	return cmd
 }
