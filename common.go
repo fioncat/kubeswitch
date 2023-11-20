@@ -46,7 +46,7 @@ func searchFzf(items []string) (int, error) {
 }
 
 func nameColor() *color.Color {
-	return color.New(color.Bold, color.FgGreen)
+	return color.New(color.Bold, color.FgMagenta)
 }
 
 func ShowTable(out io.Writer, titles []string, rows [][]string) {

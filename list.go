@@ -2,7 +2,6 @@ package main
 
 import (
 	"errors"
-	"fmt"
 	"io"
 	"sort"
 
@@ -49,33 +48,32 @@ func (o *listOption) run() error {
 
 	rows := make([][]string, 0, len(config.Contexts))
 	for name, ctx := range config.Contexts {
+		var cur string
 		if name == config.CurrentContext {
-			name = fmt.Sprintf("* %s", name)
-		} else {
-			name = fmt.Sprintf("  %s", name)
+			cur = "*"
 		}
 
 		row := []string{
+			cur,
 			name,
-			"  " + ctx.Namespace,
+			ctx.Namespace,
 		}
 		if o.wide {
 			cluster, ok := config.Clusters[ctx.Cluster]
 			if ok {
-				row = append(row, "  "+cluster.Server)
+				row = append(row, cluster.Server)
 			} else {
-				row = append(row, "  ")
+				row = append(row, "")
 			}
 		}
 
 		rows = append(rows, row)
 	}
 	sort.Slice(rows, func(i, j int) bool {
-		return rows[i][0] < rows[j][0]
+		return rows[i][1] < rows[j][1]
 	})
 
-	fmt.Fprint(o.out, "  ")
-	titles := []string{"name", "namespace"}
+	titles := []string{"", "name", "namespace"}
 	if o.wide {
 		titles = append(titles, "server")
 	}
