@@ -13,6 +13,8 @@ import (
 type listOption struct {
 	configAccess clientcmd.ConfigAccess
 	out          io.Writer
+
+	wide bool
 }
 
 func List(out io.Writer, configAccess clientcmd.ConfigAccess) *cobra.Command {
@@ -31,6 +33,8 @@ func List(out io.Writer, configAccess clientcmd.ConfigAccess) *cobra.Command {
 		},
 	}
 
+	cmd.Flags().BoolVarP(&opts.wide, "wide", "w", false, "Show more info")
+
 	return cmd
 }
 
@@ -39,28 +43,42 @@ func (o *listOption) run() error {
 	if err != nil {
 		return err
 	}
-	if len(config.Clusters) == 0 {
+	if len(config.Contexts) == 0 {
 		return errors.New("No cluster to show")
 	}
 
-	rows := make([][]string, 0, len(config.Clusters))
-	for name, cluster := range config.Clusters {
+	rows := make([][]string, 0, len(config.Contexts))
+	for name, ctx := range config.Contexts {
 		if name == config.CurrentContext {
 			name = fmt.Sprintf("* %s", name)
 		} else {
 			name = fmt.Sprintf("  %s", name)
 		}
 
-		rows = append(rows, []string{
+		row := []string{
 			name,
-			"  " + cluster.Server,
-		})
+			"  " + ctx.Namespace,
+		}
+		if o.wide {
+			cluster, ok := config.Clusters[ctx.Cluster]
+			if ok {
+				row = append(row, "  "+cluster.Server)
+			} else {
+				row = append(row, "  ")
+			}
+		}
+
+		rows = append(rows, row)
 	}
 	sort.Slice(rows, func(i, j int) bool {
 		return rows[i][0] < rows[j][0]
 	})
 
 	fmt.Fprint(o.out, "  ")
-	ShowTable(o.out, []string{"name", "server"}, rows)
+	titles := []string{"name", "namespace"}
+	if o.wide {
+		titles = append(titles, "server")
+	}
+	ShowTable(o.out, titles, rows)
 	return nil
 }
