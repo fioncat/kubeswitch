@@ -53,13 +53,14 @@ func (o *listOption) run() error {
 
 		rows = append(rows, []string{
 			name,
-			cluster.Server,
+			"  " + cluster.Server,
 		})
 	}
 	sort.Slice(rows, func(i, j int) bool {
 		return rows[i][0] < rows[j][0]
 	})
 
-	ShowTable(o.out, []string{"- name", "server"}, rows)
+	fmt.Fprint(o.out, "  ")
+	ShowTable(o.out, []string{"name", "server"}, rows)
 	return nil
 }
