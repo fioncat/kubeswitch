@@ -1,0 +1,15 @@
+# ~/.config/kubeswitch.toml
+
+cmd = "ks"
+
+env_prefix = "KUBESWITCH"
+
+editor = "$EDITOR"
+
+[kube]
+exec = "kubectl"
+cmd = "k"
+dir = "~/.kube"
+
+export_env = false
+update_context = false
