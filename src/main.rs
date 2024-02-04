@@ -34,7 +34,7 @@ struct Args {
     #[clap(long, short)]
     show: bool,
 
-    /// Switch namespace rather than kubeconfig, if enable, the meaning of NAME changes
+    /// Switch namespace rather than kubeconfig, if enabled, the meaning of NAME changes
     /// to namespace.
     #[clap(long, short)]
     namespace: bool,
@@ -56,7 +56,7 @@ struct Args {
     comp: bool,
 
     /// Print the init script, please add `kubeswitch --init <shell-type>` to your
-    /// shell profile (etc ~/.zshrc).
+    /// shell profile (etc. ~/.zshrc).
     #[clap(long)]
     init: Option<Shell>,
 
@@ -102,8 +102,7 @@ impl Args {
     fn run_edit(&self, cfg: &Config) -> Result<()> {
         let mut kubeconfig = KubeConfig::select(cfg, &self.name, SelectOption::GetOrCreate)?;
         kubeconfig.edit()?;
-        kubeconfig.show();
-        Ok(())
+        kubeconfig.switch()
     }
 
     fn run_list(&self, cfg: &Config) -> Result<()> {
@@ -121,19 +120,14 @@ impl Args {
 
     fn run_switch(&self, cfg: &Config) -> Result<()> {
         let kubeconfig = KubeConfig::select(cfg, &self.name, SelectOption::Switch)?;
-        kubeconfig.show();
-        Ok(())
+        kubeconfig.switch()
     }
 
     async fn run_namespace(&self, cfg: &Config) -> Result<()> {
         let mut kubeconfig = KubeConfig::select(cfg, &None, SelectOption::Current)?;
-        let namespace = match self.name.as_ref() {
-            Some(namespace) => Cow::Borrowed(namespace.as_str()),
-            None => kubeconfig.select_namespace().await?,
-        };
-        kubeconfig.set_namespace(namespace.into_owned())?;
-        kubeconfig.show();
-        Ok(())
+        let namespace = kubeconfig.select_namespace(&self.name).await?;
+        kubeconfig.set_namespace(namespace)?;
+        kubeconfig.switch()
     }
 }
 
