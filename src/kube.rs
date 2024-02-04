@@ -5,6 +5,7 @@ use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 use k8s_openapi::api::core::v1::Namespace as ApiCoreV1Namespace;
@@ -14,6 +15,7 @@ use kube::config::KubeConfigOptions as ApiConfigOptions;
 use kube::config::Kubeconfig as ApiKubeconfig;
 use kube::Api;
 use kube::Client as KubeClient;
+use rev_lines::RevLines;
 
 use crate::config::Config;
 
@@ -102,6 +104,10 @@ impl KubeConfig<'_> {
         }
 
         if let Some(name) = name {
+            if name == "-" {
+                return Self::select_history(cfg, current);
+            }
+
             let dir = PathBuf::from(&cfg.kube.dir);
             let path = dir.join(format!("config-{name}"));
             return match fs::metadata(&path) {
@@ -146,11 +152,38 @@ impl KubeConfig<'_> {
         Ok(config)
     }
 
-    pub fn show(&self) {
-        self.show_inner(false);
+    fn select_history(cfg: &Config, current: Option<CurrentKubeConfig>) -> Result<KubeConfig> {
+        let history = History::open()?;
+        for item in history {
+            let (name, namespace) = item?;
+            if let Some(current) = current.as_ref() {
+                if name == current.name {
+                    continue;
+                }
+            }
+
+            return Ok(KubeConfig::new(
+                cfg,
+                Some(name),
+                Cow::Owned(namespace),
+                &mut None,
+            ));
+        }
+
+        bail!("no history kubeconfig to select");
     }
 
-    fn show_inner(&self, clean: bool) {
+    fn save_history(&self) -> Result<()> {
+        History::write(self)
+    }
+
+    pub fn switch(&self) -> Result<()> {
+        self.save_history()?;
+        self.switch_inner(false);
+        Ok(())
+    }
+
+    fn switch_inner(&self, clean: bool) {
         println!("{}", self.cfg.kube.cmd);
 
         if self.cfg.kube.export_kubeconfig {
@@ -226,12 +259,20 @@ impl KubeConfig<'_> {
         fs::remove_file(&path)
             .with_context(|| format!("remove the kubeconfig file '{}'", path.display()))?;
         if self.current {
-            self.show_inner(true);
+            self.switch_inner(true);
         }
         Ok(())
     }
 
-    pub async fn select_namespace(&self) -> Result<Cow<str>> {
+    pub async fn select_namespace(&self, namespace: &Option<String>) -> Result<String> {
+        if let Some(namespace) = namespace.as_ref() {
+            if namespace == "-" {
+                return self.select_namespace_history();
+            }
+
+            return Ok(namespace.clone());
+        }
+
         let mut namespaces = match self.cfg.match_ns_alias(&self.name) {
             Some(alias) => alias,
             None => {
@@ -258,7 +299,24 @@ impl KubeConfig<'_> {
         };
 
         let idx = search_fzf(&namespaces)?;
-        Ok(namespaces.remove(idx))
+        Ok(namespaces.remove(idx).into_owned())
+    }
+
+    pub fn select_namespace_history<'a>(&self) -> Result<String> {
+        let history = History::open()?;
+
+        for item in history {
+            let (name, namespace) = item?;
+            if name != self.name {
+                continue;
+            }
+            if namespace == self.namespace {
+                continue;
+            }
+            return Ok(namespace);
+        }
+
+        bail!("no namespace history to select");
     }
 
     pub fn set_namespace(&mut self, namespace: String) -> Result<()> {
@@ -438,4 +496,97 @@ pub fn confirm(msg: impl AsRef<str>) -> Result<bool> {
     }
 
     return Ok(true);
+}
+
+struct History {
+    rev_file: RevLines<fs::File>,
+}
+
+impl History {
+    const HISTORY_NAME: &'static str = ".kubeswitch_history";
+
+    fn open() -> Result<History> {
+        let file = fs::File::open(Self::get_path()?)
+            .with_context(|| format!("open history file '{}' for reading", Self::HISTORY_NAME))?;
+        let rev_file = RevLines::new(file);
+        Ok(History { rev_file })
+    }
+
+    fn write(kubeconfig: &KubeConfig) -> Result<()> {
+        let mut opts = fs::OpenOptions::new();
+        opts.create(true).write(true).append(true);
+
+        let mut file = opts
+            .open(Self::get_path()?)
+            .with_context(|| format!("open history file '{}' for writing", Self::HISTORY_NAME))?;
+
+        let now = Self::now()?;
+        let line = format!("{now} {} {}\n", kubeconfig.name, kubeconfig.namespace);
+
+        file.write_all(line.as_bytes())
+            .context("write content to history file")?;
+        file.flush().context("flush history file")?;
+
+        Ok(())
+    }
+
+    fn now() -> Result<u64> {
+        let current_time = SystemTime::now();
+
+        let timestamp = current_time
+            .duration_since(UNIX_EPOCH)
+            .expect("time went backwards")
+            .as_secs();
+        Ok(timestamp)
+    }
+
+    fn get_path() -> Result<PathBuf> {
+        let home = match env::var_os("HOME") {
+            Some(home) => home,
+            None => bail!("cannot find $HOME env in your system"),
+        };
+
+        let path = PathBuf::from(home);
+        Ok(path.join(Self::HISTORY_NAME))
+    }
+}
+
+impl Iterator for History {
+    type Item = Result<(String, String)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let item = self.rev_file.next()?;
+            if let Err(err) = item {
+                return Some(Err(err).context("read history file"));
+            }
+            let line = item.unwrap();
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+
+            let fields: Vec<_> = line.split(" ").collect();
+            if fields.len() != 3 {
+                continue;
+            }
+
+            let mut iter = fields.into_iter();
+
+            // Ignore the first timestamp
+            iter.next();
+
+            let name = iter.next().unwrap();
+            if name.is_empty() {
+                continue;
+            }
+
+            let namespace = iter.next().unwrap();
+            if namespace.is_empty() {
+                continue;
+            }
+
+            return Some(Ok((name.to_string(), namespace.to_string())));
+        }
+    }
 }
