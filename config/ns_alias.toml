@@ -1,0 +1,9 @@
+# ~/.config/kubeswitch.toml
+
+[[ns_alias]]
+regex = "test_.*"
+alias = ["test_default", "test_system"]
+
+[[ns_alias]]
+names = ["test_cluster0", "test_cluster1"]
+alias = ["test_ns0", "test_ns1", "test_ns2"]
