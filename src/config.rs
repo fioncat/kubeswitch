@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::env;
 use std::fs;
@@ -12,9 +13,6 @@ use serde::Deserialize;
 pub struct Config {
     #[serde(default = "Config::default_cmd")]
     pub cmd: String,
-
-    #[serde(default = "Config::default_env_prefix")]
-    pub env_prefix: String,
 
     #[serde(default = "Config::default_editor")]
     pub editor: String,
@@ -72,6 +70,17 @@ impl Config {
         Ok(cfg)
     }
 
+    pub fn match_ns_alias<S: AsRef<str>>(&self, name: S) -> Option<Vec<Cow<str>>> {
+        if let Some(alias_list) = self.ns_alias.as_ref() {
+            for alias in alias_list.iter() {
+                if let Some(alias) = alias.match_alias(name.as_ref()) {
+                    return Some(alias);
+                }
+            }
+        }
+        None
+    }
+
     fn get_path() -> Result<Option<PathBuf>> {
         let path = match env::var_os(Self::CONFIG_PATH_ENV) {
             Some(path) => PathBuf::from(path),
@@ -106,9 +115,6 @@ impl Config {
         if self.cmd.is_empty() {
             bail!("`cmd` cannot be empty");
         }
-        if self.env_prefix.is_empty() {
-            bail!("`env_prefix` cannot be empty");
-        }
         if self.editor.is_empty() {
             bail!("`editor` cannot be empty");
         }
@@ -130,7 +136,6 @@ impl Config {
     fn default() -> Config {
         Config {
             cmd: Self::default_cmd(),
-            env_prefix: Self::default_env_prefix(),
             editor: Self::default_editor(),
             kube: KubeConfig::default(),
             ns_alias: None,
@@ -140,10 +145,6 @@ impl Config {
 
     fn default_cmd() -> String {
         String::from("ks")
-    }
-
-    fn default_env_prefix() -> String {
-        String::from("KUBESWITCH")
     }
 
     fn default_editor() -> String {
@@ -194,6 +195,32 @@ impl KubeConfig {
 }
 
 impl NsAlias {
+    fn match_alias<S: AsRef<str>>(&self, name: S) -> Option<Vec<Cow<str>>> {
+        let mut is_match = false;
+        if let Some(regex) = self.parsed_regex.as_ref() {
+            is_match = regex.is_match(name.as_ref());
+        }
+        if let Some(names) = self.names.as_ref() {
+            for match_name in names.iter() {
+                if match_name == name.as_ref() {
+                    is_match = true;
+                    break;
+                }
+            }
+        }
+
+        if is_match {
+            Some(
+                self.alias
+                    .iter()
+                    .map(|s| Cow::Borrowed(s.as_str()))
+                    .collect(),
+            )
+        } else {
+            None
+        }
+    }
+
     fn validate(&mut self) -> Result<()> {
         if self.alias.is_empty() {
             bail!("`ns_alias.alias` cannot be empty");

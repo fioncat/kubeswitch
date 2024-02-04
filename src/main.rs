@@ -1,18 +1,13 @@
-#![allow(dead_code)]
-
 mod config;
 mod kube;
 
-use std::{
-    borrow::Cow,
-    io::{self, Read, Write},
-    process::{Command, Stdio},
-};
+use std::borrow::Cow;
 
 use anyhow::{bail, Context, Result};
-use clap::{CommandFactory, Parser};
+use clap::{CommandFactory, Parser, ValueEnum};
 
-use crate::{config::Config, kube::KubeContext};
+use crate::config::Config;
+use crate::kube::{KubeConfig, SelectOption};
 
 /// Switch between kubernetes configs and namespaces.
 #[derive(Parser, Debug)]
@@ -35,6 +30,10 @@ struct Args {
     #[clap(long, short)]
     list: bool,
 
+    /// Show current kubeconfig.
+    #[clap(long, short)]
+    show: bool,
+
     /// Switch namespace rather than kubeconfig, if enable, the meaning of NAME changes
     /// to namespace.
     #[clap(long, short)]
@@ -56,76 +55,90 @@ struct Args {
     #[clap(long)]
     comp: bool,
 
+    /// Print the init script, please add `kubeswitch --init <shell-type>` to your
+    /// shell profile (etc ~/.zshrc).
+    #[clap(long)]
+    init: Option<Shell>,
+
+    /// The wrap target command, change it when your kubeswitch has a different name
+    /// or not placed in $PATH.
+    #[clap(long, default_value = "kubeswitch")]
+    wrap: String,
+
     /// The completion args. PLEASE DONOT USE DIRECTLY.
     #[clap(last = true)]
     comp_args: Option<Vec<String>>,
 }
 
+#[derive(Debug, Clone, ValueEnum)]
+pub enum Shell {
+    Bash,
+    Zsh,
+}
+
 impl Args {
-    fn run(&self, cfg: &Config) -> Result<()> {
+    async fn run(&self, cfg: &Config) -> Result<()> {
+        if self.edit {
+            return self.run_edit(cfg);
+        }
         if self.list {
             return self.run_list(cfg);
         }
+        if self.show {
+            let kubeconfig = KubeConfig::select(cfg, &None, SelectOption::Current)?;
+            eprintln!("{kubeconfig}");
+            return Ok(());
+        }
+        if self.delete {
+            return self.run_delete(cfg);
+        }
+        if self.namespace {
+            return self.run_namespace(cfg).await;
+        }
 
+        self.run_switch(cfg)
+    }
+
+    fn run_edit(&self, cfg: &Config) -> Result<()> {
+        let mut kubeconfig = KubeConfig::select(cfg, &self.name, SelectOption::GetOrCreate)?;
+        kubeconfig.edit()?;
+        kubeconfig.show();
         Ok(())
     }
 
     fn run_list(&self, cfg: &Config) -> Result<()> {
-        let names = KubeContext::list(cfg)?;
-        for name in names {
-            eprintln!("{name}");
+        let kubeconfigs = KubeConfig::list(cfg)?;
+        for kubeconfig in kubeconfigs {
+            eprintln!("{kubeconfig}");
         }
         Ok(())
     }
 
-    fn run_edit(&self, cfg: &Config) -> Result<()> {
-        let kube = self.select(cfg, false, false)?;
-        todo!()
-    }
-
     fn run_delete(&self, cfg: &Config) -> Result<()> {
-        let kube = self.select(cfg, true, false)?;
-        todo!()
+        let kubeconfig = KubeConfig::select(cfg, &self.name, SelectOption::Get)?;
+        kubeconfig.delete()
     }
 
-    fn select<'a>(
-        &self,
-        cfg: &'a Config,
-        require: bool,
-        exclude_current: bool,
-    ) -> Result<KubeContext<'a>> {
-        if let Some(name) = self.name.as_ref() {
-            return match KubeContext::get(cfg, name)? {
-                Some(kube) => Ok(kube),
-                None => {
-                    if require {
-                        bail!("cannot find kubeconfig '{name}'");
-                    }
-                    Ok(KubeContext::new(cfg, name))
-                }
-            };
-        }
+    fn run_switch(&self, cfg: &Config) -> Result<()> {
+        let kubeconfig = KubeConfig::select(cfg, &self.name, SelectOption::Switch)?;
+        kubeconfig.show();
+        Ok(())
+    }
 
-        let mut items = KubeContext::list(cfg)?;
-        if exclude_current {
-            if let Some(current) = KubeContext::current_name(cfg) {
-                let pos = items.iter_mut().position(|name| name == current.as_str());
-                if let Some(idx) = pos {
-                    items.remove(idx);
-                }
-            }
-        }
-        if items.is_empty() {
-            bail!("no kubeconfig to handle");
-        }
-
-        let idx = search_fzf(&items)?;
-        let name = items.into_iter().nth(idx).unwrap();
-        Ok(KubeContext::new(cfg, name))
+    async fn run_namespace(&self, cfg: &Config) -> Result<()> {
+        let mut kubeconfig = KubeConfig::select(cfg, &None, SelectOption::Current)?;
+        let namespace = match self.name.as_ref() {
+            Some(namespace) => Cow::Borrowed(namespace.as_str()),
+            None => kubeconfig.select_namespace().await?,
+        };
+        kubeconfig.set_namespace(namespace.into_owned())?;
+        kubeconfig.show();
+        Ok(())
     }
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     let cfg = Config::load().context("load config")?;
 
     let args = Args::try_parse()?;
@@ -146,7 +159,15 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    args.run(&cfg)
+    if let Some(_) = args.init {
+        if args.wrap.is_empty() {
+            bail!("wrap target cannot be empty");
+        }
+        show_init(&cfg, args);
+        return Ok(());
+    }
+
+    args.run(&cfg).await
 }
 
 fn show_version(cfg: &Config) {
@@ -180,57 +201,11 @@ fn get_cmd_name(cfg: &Config) -> &'static str {
     Box::leak(cfg.cmd.clone().into_boxed_str())
 }
 
-fn search_fzf<S: AsRef<str>>(keys: &Vec<S>) -> Result<usize> {
-    let mut input = String::with_capacity(keys.len());
-    for key in keys {
-        input.push_str(key.as_ref());
-        input.push_str("\n");
-    }
+fn show_init(cfg: &Config, args: Args) {
+    let wrap = include_bytes!("../scripts/wrap.sh");
+    let wrap = String::from_utf8_lossy(wrap).to_string();
 
-    let mut cmd = Command::new("fzf");
-    cmd.stdin(Stdio::piped());
-    cmd.stderr(Stdio::inherit());
-    cmd.stdout(Stdio::piped());
-
-    let mut child = match cmd.spawn() {
-        Ok(child) => child,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            bail!("cannot find fzf in your system, please install it first");
-        }
-        Err(e) => {
-            return Err(e).context("failed to launch fzf");
-        }
-    };
-
-    let handle = child.stdin.as_mut().unwrap();
-    write!(handle, "{input}").context("write input to fzf")?;
-    drop(child.stdin.take());
-
-    let mut stdout = child.stdout.take();
-
-    let status = child.wait().context("wait fzf done")?;
-
-    match status.code() {
-        Some(0) => {
-            let result = match stdout.as_mut() {
-                Some(stdout) => {
-                    let mut out = String::new();
-                    stdout.read_to_string(&mut out).context("read fzf output")?;
-                    out
-                }
-                None => bail!("fzf did not output anything"),
-            };
-            let result = result.trim();
-
-            match keys.iter().position(|s| s.as_ref() == result) {
-                Some(idx) => Ok(idx),
-                None => bail!("cannot find key '{result}' from fzf output"),
-            }
-        }
-        Some(1) => bail!("fzf no match found"),
-        Some(2) => bail!("fzf returned an error"),
-        Some(130) => bail!("fzf canceled"),
-        Some(128..=254) | None => bail!("fzf was terminated"),
-        _ => bail!("fzf returned an unknown error"),
-    }
+    let wrap = wrap.replace("_kubeswitch", &cfg.cmd);
+    let wrap = wrap.replace("_wrap", &args.wrap);
+    println!("{wrap}");
 }
