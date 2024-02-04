@@ -153,6 +153,10 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    if args.comp {
+        return complete(&cfg, args).await;
+    }
+
     if let Some(_) = args.init {
         if args.wrap.is_empty() {
             bail!("wrap target cannot be empty");
@@ -202,4 +206,60 @@ fn show_init(cfg: &Config, args: Args) {
     let wrap = wrap.replace("_kubeswitch", &cfg.cmd);
     let wrap = wrap.replace("_wrap", &args.wrap);
     println!("{wrap}");
+}
+
+async fn complete(cfg: &Config, args: Args) -> Result<()> {
+    if let None = args.comp_args {
+        return Ok(());
+    }
+    let args = args.comp_args.unwrap();
+
+    let mut is_namespace = false;
+    let mut count = 0;
+    let mut to_complete = None;
+    for arg in args {
+        if !arg.starts_with("-") {
+            count += 1;
+            to_complete = Some(arg);
+            continue;
+        }
+        let flag = arg.trim_start_matches('-');
+        if flag.contains('n') {
+            is_namespace = true;
+            break;
+        }
+        if flag == "namespace" {
+            is_namespace = true;
+            break;
+        }
+    }
+    if count > 1 {
+        return Ok(());
+    }
+    let to_complete = to_complete.unwrap_or(String::new());
+
+    if is_namespace {
+        let kubeconfig = KubeConfig::select(cfg, &None, SelectOption::Current)
+            .context("select current for completing namespace")?;
+        let namespaces = kubeconfig
+            .list_namespaces()
+            .await
+            .context("list namespaces for completion")?;
+
+        for ns in namespaces {
+            if ns.starts_with(&to_complete) {
+                println!("{ns}");
+            }
+        }
+        return Ok(());
+    }
+
+    let kubeconfigs = KubeConfig::list(cfg).context("list kubeconfigs for completion")?;
+    for kubeconfig in kubeconfigs {
+        if kubeconfig.name.starts_with(&to_complete) {
+            println!("{}", kubeconfig.name);
+        }
+    }
+
+    Ok(())
 }

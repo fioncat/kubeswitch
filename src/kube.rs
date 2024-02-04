@@ -264,17 +264,9 @@ impl KubeConfig<'_> {
         Ok(())
     }
 
-    pub async fn select_namespace(&self, namespace: &Option<String>) -> Result<String> {
-        if let Some(namespace) = namespace.as_ref() {
-            if namespace == "-" {
-                return self.select_namespace_history();
-            }
-
-            return Ok(namespace.clone());
-        }
-
-        let mut namespaces = match self.cfg.match_ns_alias(&self.name) {
-            Some(alias) => alias,
+    pub async fn list_namespaces(&self) -> Result<Vec<Cow<str>>> {
+        match self.cfg.match_ns_alias(&self.name) {
+            Some(alias) => Ok(alias),
             None => {
                 let path = self.get_path();
                 let kubeconfig = ApiKubeconfig::read_from(&path).context("read kubeconfig file")?;
@@ -291,12 +283,24 @@ impl KubeConfig<'_> {
                     .await
                     .context("list kube namespace")?;
 
-                namespaces
+                Ok(namespaces
                     .into_iter()
                     .filter_map(|ns| ns.metadata.name.map(|n| Cow::Owned(n)))
-                    .collect()
+                    .collect())
             }
-        };
+        }
+    }
+
+    pub async fn select_namespace(&self, namespace: &Option<String>) -> Result<String> {
+        if let Some(namespace) = namespace.as_ref() {
+            if namespace == "-" {
+                return self.select_namespace_history();
+            }
+
+            return Ok(namespace.clone());
+        }
+
+        let mut namespaces = self.list_namespaces().await?;
 
         let idx = search_fzf(&namespaces)?;
         Ok(namespaces.remove(idx).into_owned())
