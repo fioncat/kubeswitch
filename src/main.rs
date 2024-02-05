@@ -243,11 +243,11 @@ async fn complete(cfg: &Config, args: Args) -> Result<()> {
         let flag = arg.trim_start_matches('-');
         if flag.contains('n') {
             is_namespace = true;
-            break;
+            continue;
         }
         if flag == "namespace" {
             is_namespace = true;
-            break;
+            continue;
         }
     }
     if count > 1 {
@@ -255,6 +255,7 @@ async fn complete(cfg: &Config, args: Args) -> Result<()> {
     }
     let to_complete = to_complete.unwrap_or(String::new());
 
+    let mut items = Vec::new();
     if is_namespace {
         let kubeconfig = KubeConfig::select(cfg, &None, SelectOption::Current)
             .context("select current for completing namespace")?;
@@ -264,24 +265,33 @@ async fn complete(cfg: &Config, args: Args) -> Result<()> {
             .context("list namespaces for completion")?;
 
         for ns in namespaces {
+            if ns == to_complete {
+                return Ok(());
+            }
             if ns == kubeconfig.namespace {
                 continue;
             }
             if ns.starts_with(&to_complete) {
-                println!("{ns}");
+                items.push(format!("{ns}"));
             }
         }
-        return Ok(());
+    } else {
+        let kubeconfigs = KubeConfig::list(cfg).context("list kubeconfigs for completion")?;
+        for kubeconfig in kubeconfigs {
+            if kubeconfig.name == to_complete {
+                return Ok(());
+            }
+            if kubeconfig.current {
+                continue;
+            }
+            if kubeconfig.name.starts_with(&to_complete) {
+                items.push(kubeconfig.name);
+            }
+        }
     }
 
-    let kubeconfigs = KubeConfig::list(cfg).context("list kubeconfigs for completion")?;
-    for kubeconfig in kubeconfigs {
-        if kubeconfig.current {
-            continue;
-        }
-        if kubeconfig.name.starts_with(&to_complete) {
-            println!("{}", kubeconfig.name);
-        }
+    for item in items {
+        println!("{item}");
     }
 
     Ok(())
