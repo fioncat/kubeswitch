@@ -1,7 +1,6 @@
 __kubeswitch_comp() {
-	local cmd=${words[1]}
-	local cmp_args=("${words[@]:1}")
-	local items=($($cmd --comp -- "${cmp_args[@]}" 2>>/tmp/.kubeswitch_comp_logs))
+	local comp_cmd="${words[1]} --comp -- ${words[2,-1]}"
+	local items=($(eval ${comp_cmd} 2>>/tmp/.kubeswitch_comp_logs))
 	_describe 'command' items
 }
 
