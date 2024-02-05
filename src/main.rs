@@ -9,7 +9,6 @@ use clap::{CommandFactory, Parser, ValueEnum};
 use crate::config::Config;
 use crate::kube::{KubeConfig, SelectOption};
 
-/// Switch between kubernetes configs and namespaces.
 #[derive(Parser, Debug)]
 #[command(author, about)]
 #[command(disable_help_flag = true)]

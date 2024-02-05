@@ -2,6 +2,13 @@
 name = "kubeswitch"
 version = "0.1.0"
 edition = "2021"
+build = "build.rs"
+license = "MIT"
+authors = ["fioncat"]
+categories = ["command-line-utilities"]
+readme = "README.md"
+repository = "https://github.com/fioncat/kubeswitch"
+description = "🐱 Switch between kubernetes configs and namespaces"
 
 [dependencies.clap]
 version = "4.4.18"
@@ -34,3 +41,8 @@ features = ["build", "rustc"]
 
 [build-dependencies]
 simple-error = "0.3.0"
+
+[profile.release]
+lto = true
+strip = true
+incremental = false
