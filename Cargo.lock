@@ -714,6 +714,7 @@ dependencies = [
  "rev_lines",
  "scanf",
  "serde",
+ "serde_yaml",
  "shellexpand",
  "simple-error",
  "tokio",

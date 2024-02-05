@@ -6,14 +6,7 @@ __kubeswitch_cmd() {
 
 		local items
 
-		# The behavior of converting `output` into an array differs between bash and
-		# zsh. In zsh, this can be directly achieved using `()`; while in bash, it
-		# requires additional handling with IFS.
-		if [[ -n $ZSH_VERSION ]]; then
-			items=( $(echo $output) )
-		else
-			IFS=$'\n' read -d '' -r -a items <<< "$output"
-		fi
+		IFS=$'\n' items=( $(echo "${output}") )
 
 		local header=${items[@]:0:1}
 		if [[ $header != "__switch__" ]]; then

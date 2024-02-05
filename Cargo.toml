@@ -32,6 +32,7 @@ kube = "0.88.1"
 regex = "1.10.3"
 rev_lines = "0.3.0"
 scanf = "1.2.1"
+serde_yaml = "0.9.31"
 shellexpand = "3.1.0"
 toml = "0.8.9"
 

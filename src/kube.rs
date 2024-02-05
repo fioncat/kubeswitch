@@ -335,7 +335,33 @@ impl KubeConfig<'_> {
             return Ok(());
         }
 
-        todo!()
+        let path = self.get_path();
+        let mut kubeconfig = Self::read_kubeconfig(&path)?;
+
+        if kubeconfig.current_context.is_none() {
+            return Ok(());
+        }
+        let current_name = kubeconfig.current_context.as_ref().unwrap();
+        let ctx = kubeconfig
+            .contexts
+            .iter_mut()
+            .find(|ctx| ctx.name.as_str() == current_name);
+        if ctx.is_none() {
+            return Ok(());
+        }
+        let ctx = ctx.unwrap();
+        if ctx.context.is_none() {
+            return Ok(());
+        }
+
+        let ctx = ctx.context.as_mut().unwrap();
+        ctx.namespace = Some(self.namespace.to_string());
+
+        let yaml =
+            serde_yaml::to_string(&kubeconfig).context("encode changed kubeconfig to yaml")?;
+        fs::write(&path, yaml).context("write changed kubeconfig to disk")?;
+
+        Ok(())
     }
 
     fn get_path(&self) -> PathBuf {
@@ -403,12 +429,7 @@ impl KubeConfig<'_> {
     }
 
     fn check_kubeconfig<P: AsRef<Path>>(path: P) -> Result<Cow<'static, str>> {
-        let mut kubeconfig = ApiKubeconfig::read_from(path.as_ref()).with_context(|| {
-            format!(
-                "parse kubeconfig file '{}'",
-                PathBuf::from(path.as_ref()).display()
-            )
-        })?;
+        let mut kubeconfig = Self::read_kubeconfig(path.as_ref())?;
 
         if let None = kubeconfig.current_context {
             return Ok(Cow::Borrowed("default"));
@@ -431,6 +452,15 @@ impl KubeConfig<'_> {
         Ok(namespace
             .map(|ns| Cow::Owned(ns))
             .unwrap_or(Cow::Borrowed("default")))
+    }
+
+    fn read_kubeconfig<P: AsRef<Path>>(path: P) -> Result<ApiKubeconfig> {
+        ApiKubeconfig::read_from(path.as_ref()).with_context(|| {
+            format!(
+                "parse kubeconfig file '{}'",
+                PathBuf::from(path.as_ref()).display()
+            )
+        })
     }
 }
 
