@@ -183,7 +183,12 @@ impl KubeConfig<'_> {
         Ok(())
     }
 
+    pub fn unset(&self) {
+        self.switch_inner(true);
+    }
+
     fn switch_inner(&self, clean: bool) {
+        println!("__switch__");
         println!("{}", self.cfg.kube.cmd);
 
         if self.cfg.kube.export_kubeconfig {

@@ -55,6 +55,10 @@ struct Args {
     #[clap(long)]
     comp: bool,
 
+    /// Unset the current kubeconfig.
+    #[clap(long, short)]
+    unset: bool,
+
     /// Print the init script, please add `kubeswitch --init <shell-type>` to your
     /// shell profile (etc. ~/.zshrc).
     #[clap(long)]
@@ -91,6 +95,11 @@ impl Args {
         }
         if self.delete {
             return self.run_delete(cfg);
+        }
+        if self.unset {
+            let kubeconfig = KubeConfig::select(cfg, &None, SelectOption::Current)?;
+            kubeconfig.unset();
+            return Ok(());
         }
         if self.namespace {
             return self.run_namespace(cfg).await;
@@ -203,16 +212,25 @@ fn show_init(cfg: &Config, args: Args) {
     let wrap = include_bytes!("../scripts/wrap.sh");
     let wrap = String::from_utf8_lossy(wrap).to_string();
 
-    let wrap = wrap.replace("_kubeswitch", &cfg.cmd);
-    let wrap = wrap.replace("_wrap", &args.wrap);
+    let wrap = wrap.replace("__kubeswitch_cmd", &cfg.cmd);
+    let wrap = wrap.replace("__wrap_cmd", &args.wrap);
+
     println!("{wrap}");
+    println!();
+
+    let comp = match args.init.unwrap() {
+        Shell::Bash => include_bytes!("../scripts/comp-bash.sh").as_slice(),
+        Shell::Zsh => include_bytes!("../scripts/comp-zsh.zsh").as_slice(),
+    };
+    let comp = String::from_utf8_lossy(comp).to_string();
+    let comp = comp.replace("__kubeswitch_cmd", &cfg.cmd);
+    let comp = comp.replace("__kubeswitch_comp", &format!("_{}", cfg.cmd));
+
+    println!("{comp}");
 }
 
 async fn complete(cfg: &Config, args: Args) -> Result<()> {
-    if let None = args.comp_args {
-        return Ok(());
-    }
-    let args = args.comp_args.unwrap();
+    let args = args.comp_args.unwrap_or(Vec::new());
 
     let mut is_namespace = false;
     let mut count = 0;
@@ -247,6 +265,9 @@ async fn complete(cfg: &Config, args: Args) -> Result<()> {
             .context("list namespaces for completion")?;
 
         for ns in namespaces {
+            if ns == kubeconfig.namespace {
+                continue;
+            }
             if ns.starts_with(&to_complete) {
                 println!("{ns}");
             }
@@ -256,6 +277,9 @@ async fn complete(cfg: &Config, args: Args) -> Result<()> {
 
     let kubeconfigs = KubeConfig::list(cfg).context("list kubeconfigs for completion")?;
     for kubeconfig in kubeconfigs {
+        if kubeconfig.current {
+            continue;
+        }
         if kubeconfig.name.starts_with(&to_complete) {
             println!("{}", kubeconfig.name);
         }
