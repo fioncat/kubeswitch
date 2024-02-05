@@ -55,6 +55,10 @@ struct Args {
     #[clap(long)]
     comp: bool,
 
+    /// Unset the current kubeconfig.
+    #[clap(long, short)]
+    unset: bool,
+
     /// Print the init script, please add `kubeswitch --init <shell-type>` to your
     /// shell profile (etc. ~/.zshrc).
     #[clap(long)]
@@ -91,6 +95,11 @@ impl Args {
         }
         if self.delete {
             return self.run_delete(cfg);
+        }
+        if self.unset {
+            let kubeconfig = KubeConfig::select(cfg, &None, SelectOption::Current)?;
+            kubeconfig.unset();
+            return Ok(());
         }
         if self.namespace {
             return self.run_namespace(cfg).await;
@@ -153,6 +162,10 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    if args.comp {
+        return complete(&cfg, args).await;
+    }
+
     if let Some(_) = args.init {
         if args.wrap.is_empty() {
             bail!("wrap target cannot be empty");
@@ -199,7 +212,78 @@ fn show_init(cfg: &Config, args: Args) {
     let wrap = include_bytes!("../scripts/wrap.sh");
     let wrap = String::from_utf8_lossy(wrap).to_string();
 
-    let wrap = wrap.replace("_kubeswitch", &cfg.cmd);
-    let wrap = wrap.replace("_wrap", &args.wrap);
+    let wrap = wrap.replace("__kubeswitch_cmd", &cfg.cmd);
+    let wrap = wrap.replace("__wrap_cmd", &args.wrap);
+
     println!("{wrap}");
+    println!();
+
+    let comp = match args.init.unwrap() {
+        Shell::Bash => include_bytes!("../scripts/comp-bash.sh").as_slice(),
+        Shell::Zsh => include_bytes!("../scripts/comp-zsh.zsh").as_slice(),
+    };
+    let comp = String::from_utf8_lossy(comp).to_string();
+    let comp = comp.replace("__kubeswitch_cmd", &cfg.cmd);
+    let comp = comp.replace("__kubeswitch_comp", &format!("_{}", cfg.cmd));
+
+    println!("{comp}");
+}
+
+async fn complete(cfg: &Config, args: Args) -> Result<()> {
+    let args = args.comp_args.unwrap_or(Vec::new());
+
+    let mut is_namespace = false;
+    let mut count = 0;
+    let mut to_complete = None;
+    for arg in args {
+        if !arg.starts_with("-") {
+            count += 1;
+            to_complete = Some(arg);
+            continue;
+        }
+        let flag = arg.trim_start_matches('-');
+        if flag.contains('n') {
+            is_namespace = true;
+            break;
+        }
+        if flag == "namespace" {
+            is_namespace = true;
+            break;
+        }
+    }
+    if count > 1 {
+        return Ok(());
+    }
+    let to_complete = to_complete.unwrap_or(String::new());
+
+    if is_namespace {
+        let kubeconfig = KubeConfig::select(cfg, &None, SelectOption::Current)
+            .context("select current for completing namespace")?;
+        let namespaces = kubeconfig
+            .list_namespaces()
+            .await
+            .context("list namespaces for completion")?;
+
+        for ns in namespaces {
+            if ns == kubeconfig.namespace {
+                continue;
+            }
+            if ns.starts_with(&to_complete) {
+                println!("{ns}");
+            }
+        }
+        return Ok(());
+    }
+
+    let kubeconfigs = KubeConfig::list(cfg).context("list kubeconfigs for completion")?;
+    for kubeconfig in kubeconfigs {
+        if kubeconfig.current {
+            continue;
+        }
+        if kubeconfig.name.starts_with(&to_complete) {
+            println!("{}", kubeconfig.name);
+        }
+    }
+
+    Ok(())
 }
