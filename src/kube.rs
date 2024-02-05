@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::env;
+use std::ffi::OsStr;
 use std::fmt::Display;
 use std::fs;
 use std::io::{self, Read, Write};
@@ -8,14 +9,8 @@ use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
-use k8s_openapi::api::core::v1::Namespace as ApiCoreV1Namespace;
-use kube::api::ListParams;
-use kube::config::Config as ApiConfig;
-use kube::config::KubeConfigOptions as ApiConfigOptions;
-use kube::config::Kubeconfig as ApiKubeconfig;
-use kube::Api;
-use kube::Client as KubeClient;
 use rev_lines::RevLines;
+use serde::Deserialize;
 
 use crate::config::Config;
 
@@ -26,6 +21,50 @@ pub struct KubeConfig<'a> {
     pub cfg: &'a Config,
 
     pub current: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct MinimalKubeConfig {
+    #[serde(rename = "current-context")]
+    current_context: Option<String>,
+
+    contexts: Option<Vec<KubeConfigContextWithName>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct KubeConfigContextWithName {
+    name: String,
+    context: Option<KubeConfigContext>,
+}
+
+#[derive(Debug, Deserialize)]
+struct KubeConfigContext {
+    namespace: Option<String>,
+}
+
+impl MinimalKubeConfig {
+    fn read<P: AsRef<Path>>(path: P) -> Result<MinimalKubeConfig> {
+        let data = fs::read(path.as_ref()).with_context(|| {
+            format!(
+                "read kubeconfig file '{}'",
+                path.as_ref().to_str().unwrap_or("")
+            )
+        })?;
+        serde_yaml::from_slice(&data).with_context(|| {
+            format!(
+                "parse kubeconfig file '{}'",
+                path.as_ref().to_str().unwrap_or("")
+            )
+        })
+    }
+
+    fn current_namespace(mut self) -> Option<String> {
+        let cur_ctx = self.current_context.take()?;
+        let ctxs = self.contexts.take()?;
+        let ctx = ctxs.into_iter().find(|ctx| ctx.name == cur_ctx)?;
+        let ctx = ctx.context?;
+        ctx.namespace
+    }
 }
 
 pub enum SelectOption {
@@ -269,34 +308,31 @@ impl KubeConfig<'_> {
         Ok(())
     }
 
-    pub async fn list_namespaces(&self) -> Result<Vec<Cow<str>>> {
+    pub fn list_namespaces(&self) -> Result<Vec<Cow<str>>> {
         match self.cfg.match_ns_alias(&self.name) {
             Some(alias) => Ok(alias),
-            None => {
-                let path = self.get_path();
-                let kubeconfig = ApiKubeconfig::read_from(&path).context("read kubeconfig file")?;
-                let kubeconfig_opts = ApiConfigOptions::default();
-                let kubeconfig = ApiConfig::from_custom_kubeconfig(kubeconfig, &kubeconfig_opts)
-                    .await
-                    .context("build kube api config")?;
-
-                let client = KubeClient::try_from(kubeconfig).context("build kube client")?;
-
-                let ns_api: Api<ApiCoreV1Namespace> = Api::all(client);
-                let namespaces = ns_api
-                    .list(&ListParams::default())
-                    .await
-                    .context("list kube namespace")?;
-
-                Ok(namespaces
-                    .into_iter()
-                    .filter_map(|ns| ns.metadata.name.map(|n| Cow::Owned(n)))
-                    .collect())
-            }
+            None => self.list_namespace_from_command(),
         }
     }
 
-    pub async fn select_namespace(&self, namespace: &Option<String>) -> Result<String> {
+    fn list_namespace_from_command(&self) -> Result<Vec<Cow<str>>> {
+        Ok(execute_kubectl_lines(
+            self.cfg,
+            self.get_path(),
+            [
+                "get",
+                "namespaces",
+                "-o",
+                "custom-columns=NAME:.metadata.name",
+                "--no-headers",
+            ],
+        )?
+        .into_iter()
+        .map(|s| Cow::Owned(s))
+        .collect())
+    }
+
+    pub fn select_namespace(&self, namespace: &Option<String>) -> Result<String> {
         if let Some(namespace) = namespace.as_ref() {
             if namespace == "-" {
                 return self.select_namespace_history();
@@ -305,7 +341,7 @@ impl KubeConfig<'_> {
             return Ok(namespace.clone());
         }
 
-        let mut namespaces = self.list_namespaces().await?;
+        let mut namespaces = self.list_namespaces()?;
 
         let idx = search_fzf(&namespaces)?;
         Ok(namespaces.remove(idx).into_owned())
@@ -335,31 +371,12 @@ impl KubeConfig<'_> {
             return Ok(());
         }
 
-        let path = self.get_path();
-        let mut kubeconfig = Self::read_kubeconfig(&path)?;
-
-        if kubeconfig.current_context.is_none() {
-            return Ok(());
-        }
-        let current_name = kubeconfig.current_context.as_ref().unwrap();
-        let ctx = kubeconfig
-            .contexts
-            .iter_mut()
-            .find(|ctx| ctx.name.as_str() == current_name);
-        if ctx.is_none() {
-            return Ok(());
-        }
-        let ctx = ctx.unwrap();
-        if ctx.context.is_none() {
-            return Ok(());
-        }
-
-        let ctx = ctx.context.as_mut().unwrap();
-        ctx.namespace = Some(self.namespace.to_string());
-
-        let yaml =
-            serde_yaml::to_string(&kubeconfig).context("encode changed kubeconfig to yaml")?;
-        fs::write(&path, yaml).context("write changed kubeconfig to disk")?;
+        let set = format!("--namespace={}", self.namespace);
+        execute_kubectl(
+            self.cfg,
+            self.get_path(),
+            ["config", "set-context", "--current", set.as_str()],
+        )?;
 
         Ok(())
     }
@@ -429,39 +446,68 @@ impl KubeConfig<'_> {
     }
 
     fn check_kubeconfig<P: AsRef<Path>>(path: P) -> Result<Cow<'static, str>> {
-        let mut kubeconfig = Self::read_kubeconfig(path.as_ref())?;
-
-        if let None = kubeconfig.current_context {
-            return Ok(Cow::Borrowed("default"));
+        let minimal_config = MinimalKubeConfig::read(path.as_ref())?;
+        match minimal_config.current_namespace() {
+            Some(ns) => Ok(Cow::Owned(ns)),
+            None => Ok(Cow::Borrowed("default")),
         }
-        let ctx_name = kubeconfig.current_context.take().unwrap();
-        let ctx = kubeconfig
-            .contexts
-            .into_iter()
-            .find(|ctx| ctx.name == ctx_name);
-        if let None = ctx {
-            return Ok(Cow::Borrowed("default"));
-        }
-        let ctx = ctx.unwrap().context;
+    }
+}
 
-        if let None = ctx {
-            return Ok(Cow::Borrowed("default"));
-        }
-        let namespace = ctx.unwrap().namespace;
+fn execute_kubectl<P, I, S>(cfg: &Config, path: P, args: I) -> Result<String>
+where
+    P: AsRef<Path>,
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let mut cmd = Command::new(&cfg.kube.exec);
+    cmd.args(args);
+    cmd.env("KUBECONFIG", path.as_ref());
 
-        Ok(namespace
-            .map(|ns| Cow::Owned(ns))
-            .unwrap_or(Cow::Borrowed("default")))
+    cmd.stderr(Stdio::piped());
+    cmd.stdin(Stdio::inherit());
+    cmd.stdout(Stdio::piped());
+
+    let output = cmd.output().context("execute kubectl command")?;
+    let stdout = String::from_utf8(output.stdout).context("decode kubectl output")?;
+    match output.status.code() {
+        Some(code) => {
+            if code != 0 {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let args: Vec<_> = cmd.get_args().map(|arg| arg.to_str().unwrap()).collect();
+                eprintln!(
+                    "Execute kubectl command failed: {} {}",
+                    cfg.kube.exec,
+                    args.join(" ")
+                );
+                eprintln!();
+                bail!("Command exited with bad code {code}: {stderr}");
+            }
+        }
+        None => bail!("kubectl command exited with unknown code"),
     }
 
-    fn read_kubeconfig<P: AsRef<Path>>(path: P) -> Result<ApiKubeconfig> {
-        ApiKubeconfig::read_from(path.as_ref()).with_context(|| {
-            format!(
-                "parse kubeconfig file '{}'",
-                PathBuf::from(path.as_ref()).display()
-            )
-        })
+    let stdout = stdout.trim();
+    Ok(String::from(stdout))
+}
+
+fn execute_kubectl_lines<P, I, S>(cfg: &Config, path: P, args: I) -> Result<Vec<String>>
+where
+    P: AsRef<Path>,
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let output = execute_kubectl(cfg, path, args)?;
+    let lines = output.split('\n');
+    let mut items = Vec::new();
+    for line in lines {
+        let ns = line.trim();
+        if ns.is_empty() {
+            continue;
+        }
+        items.push(String::from(ns));
     }
+    Ok(items)
 }
 
 fn search_fzf<S: AsRef<str>>(keys: &Vec<S>) -> Result<usize> {
