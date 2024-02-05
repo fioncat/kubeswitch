@@ -80,7 +80,7 @@ pub enum Shell {
 }
 
 impl Args {
-    async fn run(&self, cfg: &Config) -> Result<()> {
+    fn run(&self, cfg: &Config) -> Result<()> {
         if self.edit {
             return self.run_edit(cfg);
         }
@@ -101,7 +101,7 @@ impl Args {
             return Ok(());
         }
         if self.namespace {
-            return self.run_namespace(cfg).await;
+            return self.run_namespace(cfg);
         }
 
         self.run_switch(cfg)
@@ -131,16 +131,15 @@ impl Args {
         kubeconfig.switch()
     }
 
-    async fn run_namespace(&self, cfg: &Config) -> Result<()> {
+    fn run_namespace(&self, cfg: &Config) -> Result<()> {
         let mut kubeconfig = KubeConfig::select(cfg, &None, SelectOption::Current)?;
-        let namespace = kubeconfig.select_namespace(&self.name).await?;
+        let namespace = kubeconfig.select_namespace(&self.name)?;
         kubeconfig.set_namespace(namespace)?;
         kubeconfig.switch()
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     let cfg = Config::load().context("load config")?;
 
     let args = Args::try_parse()?;
@@ -162,7 +161,7 @@ async fn main() -> Result<()> {
     }
 
     if args.comp {
-        return complete(&cfg, args).await;
+        return complete(&cfg, args);
     }
 
     if let Some(_) = args.init {
@@ -173,7 +172,7 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    args.run(&cfg).await
+    args.run(&cfg)
 }
 
 fn show_version(cfg: &Config) {
@@ -228,7 +227,7 @@ fn show_init(cfg: &Config, args: Args) {
     println!("{comp}");
 }
 
-async fn complete(cfg: &Config, args: Args) -> Result<()> {
+fn complete(cfg: &Config, args: Args) -> Result<()> {
     let args = args.comp_args.unwrap_or(Vec::new());
 
     let mut is_namespace = false;
@@ -261,7 +260,6 @@ async fn complete(cfg: &Config, args: Args) -> Result<()> {
             .context("select current for completing namespace")?;
         let namespaces = kubeconfig
             .list_namespaces()
-            .await
             .context("list namespaces for completion")?;
 
         for ns in namespaces {
