@@ -57,7 +57,7 @@ pub struct NsAlias {
 }
 
 impl Config {
-    const CONFIG_PATH_ENV: &'static str = "KUBESWITCH_CONFIG";
+    const CONFIG_PATH_ENV: &'static str = "KUBESWITCH_CONFIG_PATH";
 
     pub fn load() -> Result<Config> {
         let path = Self::get_path().context("get config path")?;
