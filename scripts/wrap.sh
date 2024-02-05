@@ -3,7 +3,17 @@ __kubeswitch_cmd() {
 		if [[ -z $output ]]; then
 			return
 		fi
-		local items=( $(echo $output) )
+
+		local items
+
+		# The behavior of converting `output` into an array differs between bash and
+		# zsh. In zsh, this can be directly achieved using `()`; while in bash, it
+		# requires additional handling with IFS.
+		if [[ -n $ZSH_VERSION ]]; then
+			items=( $(echo $output) )
+		else
+			IFS=$'\n' read -d '' -r -a items <<< "$output"
+		fi
 
 		local header=${items[@]:0:1}
 		if [[ $header != "__switch__" ]]; then
@@ -15,7 +25,7 @@ __kubeswitch_cmd() {
 		local export_kubeconfig=${items[@]:2:1}
 		local clean_flag=${items[@]:3:1}
 		if [[ $clean_flag == "1" ]]; then
-			unset KUBESWITCH_CONFIG KUBESWITCH_NAMESPACE KUBESWITCH_DISPLAY
+			unset KUBESWITCH_NAME KUBESWITCH_NAMESPACE KUBESWITCH_DISPLAY
 			if [[ $export_kubeconfig == "1" ]]; then
 				unset KUBECONFIG
 			fi
@@ -23,7 +33,7 @@ __kubeswitch_cmd() {
 			return
 		fi
 
-		export KUBESWITCH_CONFIG="${items[@]:4:1}"
+		export KUBESWITCH_NAME="${items[@]:4:1}"
 		export KUBESWITCH_NAMESPACE="${items[@]:5:1}"
 		export KUBESWITCH_DISPLAY="${items[@]:6:1}"
 

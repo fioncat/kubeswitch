@@ -47,7 +47,7 @@ impl Display for KubeConfig<'_> {
 }
 
 impl KubeConfig<'_> {
-    const CONFIG_ENV: &'static str = "KUBESWITCH_CONFIG";
+    const CONFIG_ENV: &'static str = "KUBESWITCH_NAME";
     const NAMESPACE_ENV: &'static str = "KUBESWITCH_NAMESPACE";
 
     const EDIT_TMP_PATH: &'static str = "/tmp/kubeswitch-edit-config.yaml";
