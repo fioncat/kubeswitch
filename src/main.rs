@@ -1,5 +1,5 @@
 mod config;
-mod kube;
+mod context;
 
 use std::borrow::Cow;
 
@@ -7,7 +7,7 @@ use anyhow::{bail, Context, Result};
 use clap::{CommandFactory, Parser, ValueEnum};
 
 use crate::config::Config;
-use crate::kube::{KubeConfig, SelectOption};
+use crate::context::{KubeContext, SelectOption};
 
 #[derive(Parser, Debug)]
 #[command(author, about)]
@@ -88,15 +88,15 @@ impl Args {
             return self.run_list(cfg);
         }
         if self.show {
-            let kubeconfig = KubeConfig::select(cfg, &None, SelectOption::Current)?;
-            eprintln!("{kubeconfig}");
+            let ctx = KubeContext::current(cfg)?;
+            eprintln!("{ctx}");
             return Ok(());
         }
         if self.delete {
             return self.run_delete(cfg);
         }
         if self.unset {
-            let kubeconfig = KubeConfig::select(cfg, &None, SelectOption::Current)?;
+            let kubeconfig = KubeContext::current(cfg)?;
             kubeconfig.unset();
             return Ok(());
         }
@@ -108,34 +108,38 @@ impl Args {
     }
 
     fn run_edit(&self, cfg: &Config) -> Result<()> {
-        let mut kubeconfig = KubeConfig::select(cfg, &self.name, SelectOption::GetOrCreate)?;
-        kubeconfig.edit()?;
-        kubeconfig.switch()
+        let mut ctx = KubeContext::select(cfg, &self.name, SelectOption::GetNotRequired)?;
+        ctx.edit()?;
+        ctx.switch()
     }
 
     fn run_list(&self, cfg: &Config) -> Result<()> {
-        let kubeconfigs = KubeConfig::list(cfg)?;
-        for kubeconfig in kubeconfigs {
-            eprintln!("{kubeconfig}");
+        let ctxs = KubeContext::list(cfg)?;
+        for ctx in ctxs {
+            if ctx.current {
+                eprintln!("* {ctx}");
+                continue;
+            }
+            eprintln!("{ctx}");
         }
         Ok(())
     }
 
     fn run_delete(&self, cfg: &Config) -> Result<()> {
-        let kubeconfig = KubeConfig::select(cfg, &self.name, SelectOption::Get)?;
-        kubeconfig.delete()
+        let ctx = KubeContext::select(cfg, &self.name, SelectOption::GetRequired)?;
+        ctx.delete()
     }
 
     fn run_switch(&self, cfg: &Config) -> Result<()> {
-        let kubeconfig = KubeConfig::select(cfg, &self.name, SelectOption::Switch)?;
-        kubeconfig.switch()
+        let ctx = KubeContext::select(cfg, &self.name, SelectOption::Switch)?;
+        ctx.switch()
     }
 
     fn run_namespace(&self, cfg: &Config) -> Result<()> {
-        let mut kubeconfig = KubeConfig::select(cfg, &None, SelectOption::Current)?;
-        let namespace = kubeconfig.select_namespace(&self.name)?;
-        kubeconfig.set_namespace(namespace)?;
-        kubeconfig.switch()
+        let mut ctx = KubeContext::current(cfg)?;
+        let namespace = ctx.select_namespace(&self.name)?;
+        ctx.set_namespace(namespace)?;
+        ctx.switch()
     }
 }
 
@@ -256,9 +260,9 @@ fn complete(cfg: &Config, args: Args) -> Result<()> {
 
     let mut items = Vec::new();
     if is_namespace {
-        let kubeconfig = KubeConfig::select(cfg, &None, SelectOption::Current)
-            .context("select current for completing namespace")?;
-        let namespaces = kubeconfig
+        let ctx =
+            KubeContext::current(cfg).context("get current context for completing namespace")?;
+        let namespaces = ctx
             .list_namespaces()
             .context("list namespaces for completion")?;
 
@@ -266,7 +270,7 @@ fn complete(cfg: &Config, args: Args) -> Result<()> {
             if ns == to_complete {
                 return Ok(());
             }
-            if ns == kubeconfig.namespace {
+            if ns == ctx.namespace {
                 continue;
             }
             if ns.starts_with(&to_complete) {
@@ -274,16 +278,16 @@ fn complete(cfg: &Config, args: Args) -> Result<()> {
             }
         }
     } else {
-        let kubeconfigs = KubeConfig::list(cfg).context("list kubeconfigs for completion")?;
-        for kubeconfig in kubeconfigs {
-            if kubeconfig.name == to_complete {
+        let ctxs = KubeContext::list(cfg).context("list contexts for completion")?;
+        for ctx in ctxs {
+            if ctx.name == to_complete {
                 return Ok(());
             }
-            if kubeconfig.current {
+            if ctx.current {
                 continue;
             }
-            if kubeconfig.name.starts_with(&to_complete) {
-                items.push(kubeconfig.name);
+            if ctx.name.starts_with(&to_complete) {
+                items.push(ctx.name);
             }
         }
     }

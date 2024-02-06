@@ -190,7 +190,7 @@ impl KubeConfig {
     }
 
     fn default_dir() -> String {
-        String::from("~/.kube")
+        String::from("~/.kube/config")
     }
 }
 
