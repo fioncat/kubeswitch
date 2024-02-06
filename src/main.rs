@@ -5,6 +5,7 @@ use std::borrow::Cow;
 
 use anyhow::{bail, Context, Result};
 use clap::{CommandFactory, Parser, ValueEnum};
+use regex::Regex;
 
 use crate::config::Config;
 use crate::context::{KubeContext, SelectOption};
@@ -160,6 +161,8 @@ impl Args {
     }
 }
 
+const NAME_REGEX: &'static str = "^[a-zA-Z-_0-9/:]+$";
+
 fn main() -> Result<()> {
     let cfg = Config::load().context("load config")?;
 
@@ -191,6 +194,20 @@ fn main() -> Result<()> {
         }
         show_init(&cfg, args);
         return Ok(());
+    }
+
+    if let Some(name) = args.name.as_ref() {
+        if name.is_empty() {
+            bail!("invalid input name, should not be empty");
+        }
+        let re = Regex::new(NAME_REGEX).unwrap();
+        if !re.is_match(name) {
+            bail!("invalid input name, should not contain special character");
+        }
+
+        if name.contains(":") && !args.link {
+            bail!("invalid input name, should not contain ':'");
+        }
     }
 
     args.run(&cfg)

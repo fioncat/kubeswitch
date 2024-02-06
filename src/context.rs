@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::borrow::Cow;
 use std::ffi::OsStr;
 use std::fmt::Display;
@@ -22,6 +20,8 @@ pub struct KubeContext<'a> {
     pub cfg: &'a Config,
 
     pub current: bool,
+
+    pub link: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -67,6 +67,57 @@ fn get_kubeconfig_namespace<P: AsRef<Path>>(path: P) -> Result<Cow<'static, str>
         Some(ns) => Ok(Cow::Owned(ns)),
         None => Ok(Cow::Borrowed("default")),
     }
+}
+
+fn get_symlink_abs_dest<P: AsRef<Path>>(source: P, link: &PathBuf) -> PathBuf {
+    let mut path = source
+        .as_ref()
+        .parent()
+        .map(|p| PathBuf::from(p))
+        .unwrap_or(PathBuf::new());
+    for component in link.iter() {
+        if component == "/" {
+            continue;
+        }
+        if component == ".." {
+            path = path
+                .parent()
+                .map(|p| PathBuf::from(p))
+                .unwrap_or(PathBuf::new());
+            continue;
+        }
+        path = path.join(component);
+    }
+    path
+}
+
+fn get_kubeconfig_link<P: AsRef<Path>>(cfg: &Config, path: P) -> Result<Option<String>> {
+    let meta = fs::symlink_metadata(path.as_ref()).with_context(|| {
+        format!(
+            "read symlink metadata for kubeconfig '{}'",
+            path.as_ref().display()
+        )
+    })?;
+    if meta.is_symlink() {
+        let link = fs::read_link(path.as_ref())
+            .with_context(|| format!("read symlink '{}'", path.as_ref().display()))?;
+        if link.is_absolute() {
+            return Ok(None);
+        }
+
+        let dest = get_symlink_abs_dest(path.as_ref(), &link);
+        let link = match dest.strip_prefix(&cfg.kube.dir) {
+            Ok(link) => link,
+            Err(_) => return Ok(None),
+        };
+        let link = link.to_str().unwrap_or("").trim_matches('/');
+        if link.is_empty() {
+            return Ok(None);
+        }
+
+        return Ok(Some(String::from(link)));
+    }
+    Ok(None)
 }
 
 fn get_kubeconfig_path<S: AsRef<str>>(cfg: &Config, name: S) -> PathBuf {
@@ -192,6 +243,9 @@ where
 struct KubeContextBuilder {
     current: Option<String>,
     namespace: Option<String>,
+
+    kubeconfig_namespace: Option<Cow<'static, str>>,
+    kubeconfig_link: Option<String>,
 }
 
 impl KubeContextBuilder {
@@ -201,19 +255,40 @@ impl KubeContextBuilder {
     fn new() -> Self {
         let current = env::var_os(Self::NAME_ENV).map(|s| s.to_string_lossy().into_owned());
         let namespace = env::var_os(Self::NAMESPACE_ENV).map(|s| s.to_string_lossy().into_owned());
-        KubeContextBuilder { current, namespace }
+        KubeContextBuilder {
+            current,
+            namespace,
+            kubeconfig_namespace: None,
+            kubeconfig_link: None,
+        }
     }
 
-    fn build<'a, S: AsRef<str>>(
-        &mut self,
-        cfg: &'a Config,
-        name: S,
-        namespace: Cow<'static, str>,
-    ) -> KubeContext<'a> {
+    fn parse_kubeconfig<P: AsRef<Path>>(&mut self, cfg: &Config, path: P) -> Result<()> {
+        let namespace = get_kubeconfig_namespace(path.as_ref())?;
+        self.kubeconfig_namespace = Some(namespace);
+
+        let link = get_kubeconfig_link(cfg, path.as_ref())?;
+        self.kubeconfig_link = link;
+
+        Ok(())
+    }
+
+    fn set_namespace(&mut self, namespace: String) {
+        self.namespace = Some(namespace.clone());
+        self.kubeconfig_namespace = Some(Cow::Owned(namespace));
+    }
+
+    fn build<'a, S: AsRef<str>>(&mut self, cfg: &'a Config, name: S) -> KubeContext<'a> {
         let is_current = match self.current.as_ref() {
             Some(current) => current == name.as_ref(),
             None => false,
         };
+        let namespace = self
+            .kubeconfig_namespace
+            .take()
+            .unwrap_or(Cow::Borrowed("default"));
+        let link = self.kubeconfig_link.take();
+
         if is_current {
             let name = self.current.take().unwrap();
             let namespace = match self.namespace.take() {
@@ -225,6 +300,7 @@ impl KubeContextBuilder {
                 namespace,
                 cfg,
                 current: true,
+                link,
             };
         }
 
@@ -233,6 +309,7 @@ impl KubeContextBuilder {
             namespace,
             cfg,
             current: false,
+            link,
         }
     }
 
@@ -244,7 +321,8 @@ impl KubeContextBuilder {
         let name = name.unwrap();
 
         let path = get_kubeconfig_path(cfg, name.as_str());
-        let namespace = get_kubeconfig_namespace(path)?;
+        let namespace = get_kubeconfig_namespace(&path)?;
+        let link = get_kubeconfig_link(cfg, &path)?;
 
         let namespace = match self.namespace.take() {
             Some(ns) => Cow::Owned(ns),
@@ -256,6 +334,7 @@ impl KubeContextBuilder {
             namespace,
             cfg,
             current: true,
+            link,
         })
     }
 }
@@ -491,7 +570,12 @@ pub enum SelectOption {
 
 impl Display for KubeContext<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} -> {}", self.name, self.namespace)
+        let link = self
+            .link
+            .as_ref()
+            .map(|link| Cow::Owned(format!(" ({link})")))
+            .unwrap_or(Cow::Borrowed(""));
+        write!(f, "{}{link} -> {}", self.name, self.namespace)
     }
 }
 
@@ -527,9 +611,8 @@ impl KubeContext<'_> {
                 return Ok(());
             }
 
-            let namespace = get_kubeconfig_namespace(&path)?;
-
-            let ctx = builder.build(cfg, name, namespace);
+            builder.parse_kubeconfig(cfg, &path)?;
+            let ctx = builder.build(cfg, name);
             ctxs.push(ctx);
 
             Ok(())
@@ -562,13 +645,11 @@ impl KubeContext<'_> {
             let path = get_kubeconfig_path(cfg, query);
             return match fs::metadata(&path) {
                 Ok(_) => {
-                    let namespace = get_kubeconfig_namespace(&path)?;
-                    Ok(builder.build(cfg, query, namespace))
+                    builder.parse_kubeconfig(cfg, &path)?;
+                    Ok(builder.build(cfg, query))
                 }
                 Err(err) if err.kind() == io::ErrorKind::NotFound => match opt {
-                    SelectOption::GetNotRequired => {
-                        Ok(builder.build(cfg, query, Cow::Borrowed("default")))
-                    }
+                    SelectOption::GetNotRequired => Ok(builder.build(cfg, query)),
                     _ => bail!("context '{query}' not found"),
                 },
                 Err(err) => Err(err)
@@ -606,7 +687,12 @@ impl KubeContext<'_> {
         let history = History::open()?;
         for item in history {
             let (name, namespace) = item?;
-            let ctx = builder.build(cfg, name, Cow::Owned(namespace));
+            let path = get_kubeconfig_path(cfg, &name);
+
+            builder.parse_kubeconfig(cfg, &path)?;
+            builder.set_namespace(namespace);
+
+            let ctx = builder.build(cfg, name);
             if ctx.current {
                 continue;
             }
