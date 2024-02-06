@@ -125,10 +125,10 @@ impl Args {
         let ctxs = KubeContext::list(cfg)?;
         for ctx in ctxs {
             if ctx.current {
-                eprintln!("* {ctx}");
+                println!("* {ctx}");
                 continue;
             }
-            eprintln!("{ctx}");
+            println!("{ctx}");
         }
         Ok(())
     }
