@@ -46,6 +46,10 @@ struct Args {
     #[clap(long)]
     build: bool,
 
+    /// Create a symbol link kubeconfig, the format is "{source}:{dest}".
+    #[clap(long)]
+    link: bool,
+
     /// Show version
     #[clap(long, short)]
     version: bool,
@@ -100,6 +104,9 @@ impl Args {
             kubeconfig.unset();
             return Ok(());
         }
+        if self.link {
+            return self.run_link(cfg);
+        }
         if self.namespace {
             return self.run_namespace(cfg);
         }
@@ -140,6 +147,16 @@ impl Args {
         let namespace = ctx.select_namespace(&self.name)?;
         ctx.set_namespace(namespace)?;
         ctx.switch()
+    }
+
+    fn run_link(&self, cfg: &Config) -> Result<()> {
+        use crate::context::create_symlink;
+
+        if self.name.is_none() {
+            bail!("missing link target");
+        }
+
+        create_symlink(cfg, self.name.as_ref().unwrap())
     }
 }
 

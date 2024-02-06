@@ -1,12 +1,12 @@
 #![allow(dead_code)]
 
+use std::borrow::Cow;
 use std::ffi::OsStr;
 use std::fmt::Display;
 use std::io::{self, Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
-use std::{borrow::Cow, path::PathBuf};
 use std::{env, fs};
 
 use anyhow::{bail, Context, Result};
@@ -73,6 +73,84 @@ fn get_kubeconfig_path<S: AsRef<str>>(cfg: &Config, name: S) -> PathBuf {
     PathBuf::from(&cfg.kube.dir).join(name.as_ref())
 }
 
+fn ensure_dir(path: &PathBuf) -> Result<()> {
+    if let Some(dir) = path.parent() {
+        match fs::metadata(&dir) {
+            Ok(_) => {}
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                fs::create_dir_all(&dir)
+                    .with_context(|| format!("create dir '{}'", dir.display()))?;
+            }
+            Err(err) => {
+                return Err(err)
+                    .with_context(|| format!("read metadata for dir '{}'", dir.display()))
+            }
+        }
+    }
+    Ok(())
+}
+
+fn find_share_parent_dir(path1: &PathBuf, path2: &PathBuf) -> PathBuf {
+    let mut dir = PathBuf::new();
+    let mut iter2 = path2.iter();
+    for parent1 in path1.iter() {
+        let parent2 = iter2.next();
+        if parent2.is_none() {
+            break;
+        }
+        if parent1 != parent2.unwrap() {
+            break;
+        }
+        dir = dir.join(parent1);
+    }
+    dir
+}
+
+fn get_symlink_rel_source(source: &PathBuf, dest: &PathBuf) -> PathBuf {
+    let mut rel_path = PathBuf::new();
+
+    let share_parent = find_share_parent_dir(source, dest);
+    let mut dest_dir = dest.parent().map(|p| PathBuf::from(p));
+    while dest_dir.is_some() {
+        if dest_dir.as_ref().unwrap() == &share_parent {
+            break;
+        }
+        rel_path = rel_path.join("..");
+        dest_dir = dest_dir
+            .as_ref()
+            .unwrap()
+            .parent()
+            .map(|p| PathBuf::from(p));
+    }
+
+    let source_rel = source.strip_prefix(&share_parent).unwrap();
+    rel_path.join(source_rel)
+}
+
+pub fn create_symlink(cfg: &Config, target: &String) -> Result<()> {
+    use std::os::unix::fs::symlink;
+
+    let fields: Vec<_> = target.split(':').collect();
+    if fields.len() != 2 {
+        bail!("bad link name format, should be '<source>:<target>'");
+    }
+
+    let source = get_kubeconfig_path(cfg, fields[0]);
+    let meta = fs::metadata(&source).context("read metadata for link source")?;
+    if meta.is_dir() {
+        bail!("link source cannot be a dir");
+    }
+
+    let dest = get_kubeconfig_path(cfg, fields[1]);
+    ensure_dir(&dest)?;
+
+    let source = get_symlink_rel_source(&source, &dest);
+    symlink(&source, &dest)
+        .with_context(|| format!("create symlink {} -> {}", source.display(), dest.display()))?;
+
+    Ok(())
+}
+
 fn walk_files<P, F>(dir: P, mut handle: F) -> Result<()>
 where
     P: AsRef<Path>,
@@ -97,7 +175,7 @@ where
             let meta = ent
                 .metadata()
                 .with_context(|| format!("stat metadata for '{}'", path.display()))?;
-            if meta.is_file() {
+            if meta.is_file() || meta.is_symlink() {
                 handle(path)?;
                 continue;
             }
@@ -635,20 +713,7 @@ impl KubeContext<'_> {
             bail!("edit content not changed");
         }
 
-        if let Some(dir) = path.parent() {
-            match fs::metadata(&dir) {
-                Ok(_) => {}
-                Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                    fs::create_dir_all(&dir)
-                        .with_context(|| format!("create dir '{}'", dir.display()))?;
-                }
-                Err(err) => {
-                    return Err(err)
-                        .with_context(|| format!("read metadata for dir '{}'", dir.display()))
-                }
-            }
-        }
-
+        ensure_dir(&path)?;
         fs::write(&path, edit_content).context("write edit content to kubeconfig")?;
         fs::remove_file(&edit_path).context("remove edit file")?;
 
