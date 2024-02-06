@@ -15,22 +15,22 @@ use crate::context::{KubeContext, SelectOption};
 #[command(disable_help_flag = true)]
 #[command(disable_version_flag = true)]
 struct Args {
-    /// The kubeconfig or namespace name, respect to `-n` flag.
+    /// The context or namespace name, respect to `-n` flag.
     name: Option<String>,
 
-    /// Edit mode, edit kubeconfig in editor.
+    /// Edit mode, edit context's kubeconfig file in editor.
     #[clap(long, short)]
     edit: bool,
 
-    /// Delete the kubeconfig file.
+    /// Delete the context, its kubeconfig file will be deleted.
     #[clap(long, short)]
     delete: bool,
 
-    /// List kubeconfigs.
+    /// List contexts.
     #[clap(long, short)]
     list: bool,
 
-    /// Show current kubeconfig.
+    /// Show current context.
     #[clap(long, short)]
     show: bool,
 
@@ -47,7 +47,7 @@ struct Args {
     #[clap(long)]
     build: bool,
 
-    /// Create a symbol link kubeconfig, the format is "{source}:{dest}".
+    /// Create a symbol link context, the format is "{source}:{dest}".
     #[clap(long)]
     link: bool,
 
@@ -59,7 +59,7 @@ struct Args {
     #[clap(long)]
     comp: bool,
 
-    /// Unset the current kubeconfig.
+    /// Unset the current context.
     #[clap(long, short)]
     unset: bool,
 
@@ -101,8 +101,8 @@ impl Args {
             return self.run_delete(cfg);
         }
         if self.unset {
-            let kubeconfig = KubeContext::current(cfg)?;
-            kubeconfig.unset();
+            let ctx = KubeContext::current(cfg)?;
+            ctx.unset();
             return Ok(());
         }
         if self.link {
