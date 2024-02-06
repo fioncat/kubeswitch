@@ -1,35 +1,36 @@
 mod config;
-mod kube;
+mod context;
 
 use std::borrow::Cow;
 
 use anyhow::{bail, Context, Result};
 use clap::{CommandFactory, Parser, ValueEnum};
+use regex::Regex;
 
 use crate::config::Config;
-use crate::kube::{KubeConfig, SelectOption};
+use crate::context::{KubeContext, SelectOption};
 
 #[derive(Parser, Debug)]
 #[command(author, about)]
 #[command(disable_help_flag = true)]
 #[command(disable_version_flag = true)]
 struct Args {
-    /// The kubeconfig or namespace name, respect to `-n` flag.
+    /// The context or namespace name, respect to `-n` flag.
     name: Option<String>,
 
-    /// Edit mode, edit kubeconfig in editor.
+    /// Edit mode, edit context's kubeconfig file in editor.
     #[clap(long, short)]
     edit: bool,
 
-    /// Delete the kubeconfig file.
+    /// Delete the context, its kubeconfig file will be deleted.
     #[clap(long, short)]
     delete: bool,
 
-    /// List kubeconfigs.
+    /// List contexts.
     #[clap(long, short)]
     list: bool,
 
-    /// Show current kubeconfig.
+    /// Show current context.
     #[clap(long, short)]
     show: bool,
 
@@ -46,6 +47,10 @@ struct Args {
     #[clap(long)]
     build: bool,
 
+    /// Create a symbol link context, the format is "{source}:{dest}".
+    #[clap(long)]
+    link: bool,
+
     /// Show version
     #[clap(long, short)]
     version: bool,
@@ -54,7 +59,7 @@ struct Args {
     #[clap(long)]
     comp: bool,
 
-    /// Unset the current kubeconfig.
+    /// Unset the current context.
     #[clap(long, short)]
     unset: bool,
 
@@ -88,17 +93,20 @@ impl Args {
             return self.run_list(cfg);
         }
         if self.show {
-            let kubeconfig = KubeConfig::select(cfg, &None, SelectOption::Current)?;
-            eprintln!("{kubeconfig}");
+            let ctx = KubeContext::current(cfg)?;
+            eprintln!("{ctx}");
             return Ok(());
         }
         if self.delete {
             return self.run_delete(cfg);
         }
         if self.unset {
-            let kubeconfig = KubeConfig::select(cfg, &None, SelectOption::Current)?;
-            kubeconfig.unset();
+            let ctx = KubeContext::current(cfg)?;
+            ctx.unset();
             return Ok(());
+        }
+        if self.link {
+            return self.run_link(cfg);
         }
         if self.namespace {
             return self.run_namespace(cfg);
@@ -108,36 +116,52 @@ impl Args {
     }
 
     fn run_edit(&self, cfg: &Config) -> Result<()> {
-        let mut kubeconfig = KubeConfig::select(cfg, &self.name, SelectOption::GetOrCreate)?;
-        kubeconfig.edit()?;
-        kubeconfig.switch()
+        let mut ctx = KubeContext::select(cfg, &self.name, SelectOption::GetNotRequired)?;
+        ctx.edit()?;
+        ctx.switch()
     }
 
     fn run_list(&self, cfg: &Config) -> Result<()> {
-        let kubeconfigs = KubeConfig::list(cfg)?;
-        for kubeconfig in kubeconfigs {
-            eprintln!("{kubeconfig}");
+        let ctxs = KubeContext::list(cfg)?;
+        for ctx in ctxs {
+            if ctx.current {
+                eprintln!("* {ctx}");
+                continue;
+            }
+            eprintln!("{ctx}");
         }
         Ok(())
     }
 
     fn run_delete(&self, cfg: &Config) -> Result<()> {
-        let kubeconfig = KubeConfig::select(cfg, &self.name, SelectOption::Get)?;
-        kubeconfig.delete()
+        let ctx = KubeContext::select(cfg, &self.name, SelectOption::GetRequired)?;
+        ctx.delete()
     }
 
     fn run_switch(&self, cfg: &Config) -> Result<()> {
-        let kubeconfig = KubeConfig::select(cfg, &self.name, SelectOption::Switch)?;
-        kubeconfig.switch()
+        let ctx = KubeContext::select(cfg, &self.name, SelectOption::Switch)?;
+        ctx.switch()
     }
 
     fn run_namespace(&self, cfg: &Config) -> Result<()> {
-        let mut kubeconfig = KubeConfig::select(cfg, &None, SelectOption::Current)?;
-        let namespace = kubeconfig.select_namespace(&self.name)?;
-        kubeconfig.set_namespace(namespace)?;
-        kubeconfig.switch()
+        let mut ctx = KubeContext::current(cfg)?;
+        let namespace = ctx.select_namespace(&self.name)?;
+        ctx.set_namespace(namespace)?;
+        ctx.switch()
+    }
+
+    fn run_link(&self, cfg: &Config) -> Result<()> {
+        use crate::context::create_symlink;
+
+        if self.name.is_none() {
+            bail!("missing link target");
+        }
+
+        create_symlink(cfg, self.name.as_ref().unwrap())
     }
 }
+
+const NAME_REGEX: &'static str = "^[a-zA-Z-_0-9/:]+$";
 
 fn main() -> Result<()> {
     let cfg = Config::load().context("load config")?;
@@ -170,6 +194,20 @@ fn main() -> Result<()> {
         }
         show_init(&cfg, args);
         return Ok(());
+    }
+
+    if let Some(name) = args.name.as_ref() {
+        if name.is_empty() {
+            bail!("invalid input name, should not be empty");
+        }
+        let re = Regex::new(NAME_REGEX).unwrap();
+        if !re.is_match(name) {
+            bail!("invalid input name, should not contain special character");
+        }
+
+        if name.contains(":") && !args.link {
+            bail!("invalid input name, should not contain ':'");
+        }
     }
 
     args.run(&cfg)
@@ -256,9 +294,9 @@ fn complete(cfg: &Config, args: Args) -> Result<()> {
 
     let mut items = Vec::new();
     if is_namespace {
-        let kubeconfig = KubeConfig::select(cfg, &None, SelectOption::Current)
-            .context("select current for completing namespace")?;
-        let namespaces = kubeconfig
+        let ctx =
+            KubeContext::current(cfg).context("get current context for completing namespace")?;
+        let namespaces = ctx
             .list_namespaces()
             .context("list namespaces for completion")?;
 
@@ -266,7 +304,7 @@ fn complete(cfg: &Config, args: Args) -> Result<()> {
             if ns == to_complete {
                 return Ok(());
             }
-            if ns == kubeconfig.namespace {
+            if ns == ctx.namespace {
                 continue;
             }
             if ns.starts_with(&to_complete) {
@@ -274,16 +312,16 @@ fn complete(cfg: &Config, args: Args) -> Result<()> {
             }
         }
     } else {
-        let kubeconfigs = KubeConfig::list(cfg).context("list kubeconfigs for completion")?;
-        for kubeconfig in kubeconfigs {
-            if kubeconfig.name == to_complete {
+        let ctxs = KubeContext::list(cfg).context("list contexts for completion")?;
+        for ctx in ctxs {
+            if ctx.name == to_complete {
                 return Ok(());
             }
-            if kubeconfig.current {
+            if ctx.current {
                 continue;
             }
-            if kubeconfig.name.starts_with(&to_complete) {
-                items.push(kubeconfig.name);
+            if ctx.name.starts_with(&to_complete) {
+                items.push(ctx.name);
             }
         }
     }
