@@ -69,21 +69,18 @@ fn get_kubeconfig_namespace<P: AsRef<Path>>(path: P) -> Result<Cow<'static, str>
     }
 }
 
-fn get_symlink_abs_dest<P: AsRef<Path>>(source: P, link: &PathBuf) -> PathBuf {
+fn get_symlink_abs_dest<P: AsRef<Path>>(source: P, link: &Path) -> PathBuf {
     let mut path = source
         .as_ref()
         .parent()
-        .map(|p| PathBuf::from(p))
+        .map(PathBuf::from)
         .unwrap_or(PathBuf::new());
     for component in link.iter() {
         if component == "/" {
             continue;
         }
         if component == ".." {
-            path = path
-                .parent()
-                .map(|p| PathBuf::from(p))
-                .unwrap_or(PathBuf::new());
+            path = path.parent().map(PathBuf::from).unwrap_or(PathBuf::new());
             continue;
         }
         path = path.join(component);
@@ -124,12 +121,12 @@ fn get_kubeconfig_path<S: AsRef<str>>(cfg: &Config, name: S) -> PathBuf {
     PathBuf::from(&cfg.kube.dir).join(name.as_ref())
 }
 
-fn ensure_dir(path: &PathBuf) -> Result<()> {
+fn ensure_dir(path: &Path) -> Result<()> {
     if let Some(dir) = path.parent() {
-        match fs::metadata(&dir) {
+        match fs::metadata(dir) {
             Ok(_) => {}
             Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                fs::create_dir_all(&dir)
+                fs::create_dir_all(dir)
                     .with_context(|| format!("create dir '{}'", dir.display()))?;
             }
             Err(err) => {
@@ -141,7 +138,7 @@ fn ensure_dir(path: &PathBuf) -> Result<()> {
     Ok(())
 }
 
-fn find_share_parent_dir(path1: &PathBuf, path2: &PathBuf) -> PathBuf {
+fn find_share_parent_dir(path1: &Path, path2: &Path) -> PathBuf {
     let mut dir = PathBuf::new();
     let mut iter2 = path2.iter();
     for parent1 in path1.iter() {
@@ -157,28 +154,24 @@ fn find_share_parent_dir(path1: &PathBuf, path2: &PathBuf) -> PathBuf {
     dir
 }
 
-fn get_symlink_rel_source(source: &PathBuf, dest: &PathBuf) -> PathBuf {
+fn get_symlink_rel_source(source: &Path, dest: &Path) -> PathBuf {
     let mut rel_path = PathBuf::new();
 
     let share_parent = find_share_parent_dir(source, dest);
-    let mut dest_dir = dest.parent().map(|p| PathBuf::from(p));
+    let mut dest_dir = dest.parent().map(PathBuf::from);
     while dest_dir.is_some() {
         if dest_dir.as_ref().unwrap() == &share_parent {
             break;
         }
         rel_path = rel_path.join("..");
-        dest_dir = dest_dir
-            .as_ref()
-            .unwrap()
-            .parent()
-            .map(|p| PathBuf::from(p));
+        dest_dir = dest_dir.as_ref().unwrap().parent().map(PathBuf::from);
     }
 
     let source_rel = source.strip_prefix(&share_parent).unwrap();
     rel_path.join(source_rel)
 }
 
-pub fn create_symlink(cfg: &Config, target: &String) -> Result<()> {
+pub fn create_symlink(cfg: &Config, target: &str) -> Result<()> {
     use std::os::unix::fs::symlink;
 
     let fields: Vec<_> = target.split(':').collect();
@@ -209,8 +202,7 @@ where
 {
     let mut stack = vec![Cow::Borrowed(dir.as_ref())];
 
-    while !stack.is_empty() {
-        let dir = stack.pop().unwrap();
+    while let Some(dir) = stack.pop() {
         let dir_read = match fs::read_dir(dir.as_ref()) {
             Ok(dir_read) => dir_read,
             Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
@@ -407,7 +399,7 @@ impl Iterator for History {
                 continue;
             }
 
-            let fields: Vec<_> = line.split(" ").collect();
+            let fields: Vec<_> = line.split(' ').collect();
             if fields.len() != 3 {
                 continue;
             }
@@ -492,7 +484,7 @@ fn search_fzf<S: AsRef<str>>(keys: &Vec<S>) -> Result<usize> {
     let mut input = String::with_capacity(keys.len());
     for key in keys {
         input.push_str(key.as_ref());
-        input.push_str("\n");
+        input.push('\n');
     }
 
     let mut cmd = Command::new("fzf");
@@ -558,7 +550,7 @@ pub fn confirm(msg: impl AsRef<str>) -> Result<bool> {
         return Ok(false);
     }
 
-    return Ok(true);
+    Ok(true)
 }
 
 pub enum SelectOption {
@@ -669,7 +661,7 @@ impl KubeContext<'_> {
 
         let mut ctxs = Self::list(cfg)?;
         if let SelectOption::Switch = opt {
-            ctxs = ctxs.into_iter().filter(|c| !c.current).collect();
+            ctxs.retain(|c| !c.current);
         }
         if ctxs.is_empty() {
             bail!("no context to select");
@@ -704,10 +696,10 @@ impl KubeContext<'_> {
     }
 
     fn select_by_dir<'a>(cfg: &'a Config, dir: &str, opt: SelectOption) -> Result<KubeContext<'a>> {
-        let dir_path = PathBuf::from(&cfg.kube.dir).join(&dir);
+        let dir_path = PathBuf::from(&cfg.kube.dir).join(dir);
         let mut ctxs = Self::list_inner(cfg, Some(dir_path))?;
         if let SelectOption::Switch = opt {
-            ctxs = ctxs.into_iter().filter(|c| !c.current).collect();
+            ctxs.retain(|c| !c.current);
         }
         if ctxs.is_empty() {
             bail!("no context under '{dir}'");
@@ -841,7 +833,7 @@ impl KubeContext<'_> {
             ],
         )?
         .into_iter()
-        .map(|s| Cow::Owned(s))
+        .map(Cow::Owned)
         .collect())
     }
 
@@ -867,7 +859,7 @@ impl KubeContext<'_> {
         Ok(namespaces.remove(idx).into_owned())
     }
 
-    pub fn select_namespace_history<'a>(&self) -> Result<String> {
+    pub fn select_namespace_history(&self) -> Result<String> {
         let history = History::open()?;
 
         for item in history {
