@@ -229,7 +229,7 @@ impl NsAlias {
         let mut has_regex = false;
         if let Some(regex) = self.regex.as_ref() {
             let regex =
-                Regex::new(&regex).with_context(|| format!("parse ns_alias regex '{regex}'"))?;
+                Regex::new(regex).with_context(|| format!("parse ns_alias regex '{regex}'"))?;
             self.parsed_regex = Some(regex);
             has_regex = true;
         }

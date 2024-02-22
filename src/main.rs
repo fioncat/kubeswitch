@@ -161,7 +161,7 @@ impl Args {
     }
 }
 
-const NAME_REGEX: &'static str = "^[a-zA-Z-_0-9/:]+$";
+const NAME_REGEX: &str = "^[a-zA-Z-_0-9/:]+$";
 
 fn main() -> Result<()> {
     let cfg = Config::load().context("load config")?;
@@ -188,7 +188,7 @@ fn main() -> Result<()> {
         return complete(&cfg, args);
     }
 
-    if let Some(_) = args.init {
+    if args.init.is_some() {
         if args.wrap.is_empty() {
             bail!("wrap target cannot be empty");
         }
@@ -205,7 +205,7 @@ fn main() -> Result<()> {
             bail!("invalid input name, should not contain special character");
         }
 
-        if name.contains(":") && !args.link {
+        if name.contains(':') && !args.link {
             bail!("invalid input name, should not contain ':'");
         }
     }
@@ -214,7 +214,7 @@ fn main() -> Result<()> {
 }
 
 fn show_version(cfg: &Config) {
-    eprintln!("{} {}", get_cmd_name(&cfg), env!("BUILD_VERSION"));
+    eprintln!("{} {}", get_cmd_name(cfg), env!("BUILD_VERSION"));
 }
 
 fn show_build_info(cfg: &Config) {
@@ -266,13 +266,13 @@ fn show_init(cfg: &Config, args: Args) {
 }
 
 fn complete(cfg: &Config, args: Args) -> Result<()> {
-    let args = args.comp_args.unwrap_or(Vec::new());
+    let args = args.comp_args.unwrap_or_default();
 
     let mut is_namespace = false;
     let mut count = 0;
     let mut to_complete = None;
     for arg in args {
-        if !arg.starts_with("-") {
+        if !arg.starts_with('-') {
             count += 1;
             to_complete = Some(arg);
             continue;
