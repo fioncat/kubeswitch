@@ -746,6 +746,17 @@ impl KubeContext<'_> {
         println!("{self}"); // display
         println!("{}", self.cfg.kube.exec);
         println!("{}", self.get_path().display());
+
+        if self.cfg.k9s.is_none() {
+            println!("0");
+            return;
+        }
+
+        println!("1");
+
+        let k9s = self.cfg.k9s.as_ref().unwrap();
+        println!("{}", k9s.exec);
+        println!("{}", k9s.cmd);
     }
 
     fn get_path(&self) -> PathBuf {

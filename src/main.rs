@@ -6,6 +6,7 @@ use std::borrow::Cow;
 use anyhow::{bail, Context, Result};
 use clap::{CommandFactory, Parser, ValueEnum};
 use regex::Regex;
+use serde::Serialize;
 
 use crate::config::Config;
 use crate::context::{KubeContext, SelectOption};
@@ -54,6 +55,10 @@ struct Args {
     /// Show version
     #[clap(long, short)]
     version: bool,
+
+    /// Show applied config in json.
+    #[clap(long)]
+    show_config: bool,
 
     /// Generate completion items. PLEASE DONOT USE DIRECTLY.
     #[clap(long)]
@@ -176,6 +181,21 @@ fn main() -> Result<()> {
 
     if args.version {
         show_version(&cfg);
+        return Ok(());
+    }
+
+    if args.show_config {
+        use serde_json::ser::PrettyFormatter;
+        use serde_json::Serializer;
+
+        let formatter = PrettyFormatter::with_indent(b"    ");
+        let mut buf = Vec::new();
+        let mut ser = Serializer::with_formatter(&mut buf, formatter);
+        cfg.serialize(&mut ser).context("serialize config")?;
+
+        let json = String::from_utf8(buf).context("encode json utf8")?;
+        println!("{json}");
+
         return Ok(());
     }
 
