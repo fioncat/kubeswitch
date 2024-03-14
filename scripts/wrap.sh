@@ -38,6 +38,13 @@ __kubeswitch_cmd() {
 			export KUBECONFIG="${kubeconfig_path}"
 		fi
 
+		local k9s_enable="${items[@]:9:1}"
+		if [[ $k9s_enable == "1" ]]; then
+			local k9s_exec="${items[@]:10:1}"
+			local k9s_cmd="${items[@]:11:1}"
+			alias ${k9s_cmd}="${k9s_exec} --kubeconfig ${kubeconfig_path} --namespace ${KUBESWITCH_NAMESPACE}"
+		fi
+
 		return
 	fi
 	return 1

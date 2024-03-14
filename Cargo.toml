@@ -10,29 +10,21 @@ readme = "README.md"
 repository = "https://github.com/fioncat/kubeswitch"
 description = "🐱 Switch between kubernetes configs and namespaces"
 
-[dependencies.clap]
-version = "4.4.18"
-features = ["derive"]
-
-[dependencies.serde]
-version = "1.0.196"
-features = ["derive"]
-
 [dependencies]
-anyhow = "1.0.79"
+anyhow = "1.0.81"
+clap = { version = "4.5.2", features = ["derive"] }
 regex = "1.10.3"
 rev_lines = "0.3.0"
 scanf = "1.2.1"
-serde_yaml = "0.9.31"
+serde = { version = "1.0.197", features = ["derive"] }
+serde_json = "1.0.114"
+serde_yaml = "0.9.32"
 shellexpand = "3.1.0"
-toml = "0.8.9"
-
-[build-dependencies.vergen]
-version = "8.3.1"
-features = ["build", "rustc"]
+toml = "0.8.11"
 
 [build-dependencies]
 simple-error = "0.3.0"
+vergen = { version = "8.3.1", features = ["build", "rustc"] }
 
 [profile.release]
 lto = true

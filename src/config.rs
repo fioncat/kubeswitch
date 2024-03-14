@@ -7,9 +7,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use regex::Regex;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Config {
     #[serde(default = "Config::default_cmd")]
     pub cmd: String,
@@ -20,13 +20,15 @@ pub struct Config {
     #[serde(default = "KubeConfig::default")]
     pub kube: KubeConfig,
 
+    pub k9s: Option<K9sConfig>,
+
     pub ns_alias: Option<Vec<NsAlias>>,
 
     #[serde(skip)]
     pub path: Option<PathBuf>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct KubeConfig {
     #[serde(default = "KubeConfig::default_exec")]
     pub exec: String,
@@ -44,7 +46,18 @@ pub struct KubeConfig {
     pub update_context: bool,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct K9sConfig {
+    pub enable: bool,
+
+    #[serde(default = "K9sConfig::default_exec")]
+    pub exec: String,
+
+    #[serde(default = "K9sConfig::default_cmd")]
+    pub cmd: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct NsAlias {
     pub regex: Option<String>,
 
@@ -122,6 +135,10 @@ impl Config {
 
         self.kube.validate().context("validate kube")?;
 
+        if let Some(k9s) = self.k9s.as_mut() {
+            k9s.validate().context("validate k9s")?;
+        }
+
         if let Some(ns_alias) = self.ns_alias.as_mut() {
             for (idx, alias) in ns_alias.iter_mut().enumerate() {
                 alias
@@ -138,6 +155,7 @@ impl Config {
             cmd: Self::default_cmd(),
             editor: Self::default_editor(),
             kube: KubeConfig::default(),
+            k9s: None,
             ns_alias: None,
             path: None,
         }
@@ -191,6 +209,29 @@ impl KubeConfig {
 
     fn default_dir() -> String {
         String::from("~/.kube/config")
+    }
+}
+
+impl K9sConfig {
+    fn validate(&mut self) -> Result<()> {
+        if self.exec.is_empty() {
+            bail!("`k9s.exec` cannot be empty");
+        }
+        self.exec = expand_env(&self.exec).context("expand env for `k9s.exec`")?;
+
+        if self.cmd.is_empty() {
+            bail!("`k9s.cmd` cannot be empty");
+        }
+
+        Ok(())
+    }
+
+    fn default_exec() -> String {
+        String::from("k9s")
+    }
+
+    fn default_cmd() -> String {
+        String::from("kk")
     }
 }
 
